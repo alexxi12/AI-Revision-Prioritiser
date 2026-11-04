@@ -59,7 +59,7 @@ def password_hash(password, salt):
 
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=str(ROOT), **kwargs)
+        super().__init__(*args, directory=str(ROOT / 'public'), **kwargs)
 
     def send_json(self, value, status=200, cookie=None):
         body = json.dumps(value).encode()
