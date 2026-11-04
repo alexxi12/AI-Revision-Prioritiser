@@ -13,6 +13,10 @@ from pathlib import Path
 ROOT = Path(__file__).parent
 DB = Path(os.environ.get('REVISION_DB', ROOT / 'revision.sqlite3'))
 PORT = int(os.environ.get('PORT', '8000'))
+ON_RENDER = os.environ.get('RENDER') == 'true'
+HOST = os.environ.get('HOST', '0.0.0.0' if ON_RENDER else '127.0.0.1')
+APP_ORIGIN = os.environ.get('APP_ORIGIN', os.environ.get('RENDER_EXTERNAL_URL', '')).rstrip('/')
+SECURE_COOKIE = '; Secure' if ON_RENDER or APP_ORIGIN.startswith('https://') else ''
 
 QUESTIONS = [
  ('Memory', 'Multi-store model', 'Describe the three stores in the multi-store model of memory.', [('Sensory register briefly holds sensory information.', ['sensory']), ('Short-term memory has limited capacity and duration.', ['short-term', 'short term', 'stm']), ('Long-term memory can retain information for extended periods.', ['long-term', 'long term', 'ltm'])]),
@@ -32,13 +36,29 @@ QUESTIONS = [
  ('Research Methods', 'Ethics', 'Explain informed consent and the right to withdraw.', [('Informed consent requires sufficient information to agree voluntarily.', ['inform', 'voluntar']), ('Participants can leave a study without penalty.', ['leave', 'withdraw', 'penalt'])]),
 ]
 
+class DatabaseConnection(sqlite3.Connection):
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            self.close()
+
+
 def connect():
-    con = sqlite3.connect(DB, timeout=15)
+    con = sqlite3.connect(DB, timeout=15, factory=DatabaseConnection)
     con.row_factory = sqlite3.Row
     con.execute('PRAGMA foreign_keys=ON')
     return con
 
 def init():
+    admin_password = os.environ.get('ADMIN_PASSWORD', '')
+    if ON_RENDER and not admin_password:
+        raise ValueError('Set ADMIN_PASSWORD in Render before starting the service.')
+    if admin_password and not 10 <= len(admin_password) <= 128:
+        raise ValueError('ADMIN_PASSWORD must contain 10–128 characters.')
+    if ON_RENDER and not APP_ORIGIN.startswith('https://'):
+        raise ValueError('Set APP_ORIGIN to the HTTPS website URL.')
+    DB.parent.mkdir(parents=True, exist_ok=True)
     with connect() as con:
         con.executescript('''
         CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, salt TEXT NOT NULL, password TEXT NOT NULL);
@@ -49,15 +69,25 @@ def init():
         if 'role' not in columns:
             con.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'student'")
         con.execute("UPDATE users SET email='admin@admin.com' WHERE email='admin' AND role='admin'")
-        if not con.execute("SELECT id FROM users WHERE email='admin@admin.com'").fetchone():
-            salt = secrets.token_hex(16)
-            con.execute('INSERT INTO users(name,email,salt,password,role) VALUES(?,?,?,?,?)',
-                        ('Admin', 'admin@admin.com', salt, password_hash('admin22345', salt), 'admin'))
+        if admin_password:
+            admin = con.execute("SELECT * FROM users WHERE email='admin@admin.com'").fetchone()
+            if admin and admin['role'] != 'admin':
+                raise ValueError('The admin email is already registered as a student.')
+            if not admin or not hmac.compare_digest(admin['password'], password_hash(admin_password, admin['salt'])):
+                salt = secrets.token_hex(16)
+                hashed = password_hash(admin_password, salt)
+                if admin:
+                    con.execute('UPDATE users SET salt=?,password=? WHERE id=?', (salt, hashed, admin['id']))
+                    con.execute('DELETE FROM sessions WHERE user_id=?', (admin['id'],))
+                else:
+                    con.execute('INSERT INTO users(name,email,salt,password,role) VALUES(?,?,?,?,?)',
+                                ('Admin', 'admin@admin.com', salt, hashed, 'admin'))
 
 def password_hash(password, salt):
     return hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=16384, r=8, p=1).hex()
 
 class Handler(SimpleHTTPRequestHandler):
+    scheme = 'http'
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT / 'public'), **kwargs)
 
@@ -68,7 +98,8 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
         if cookie:
-            self.send_header('Set-Cookie', cookie)
+            secure = SECURE_COOKIE or ('; Secure' if self.scheme == 'https' else '')
+            self.send_header('Set-Cookie', cookie + secure)
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -85,6 +116,10 @@ class Handler(SimpleHTTPRequestHandler):
         return con.execute('SELECT users.id,name,email,role FROM users JOIN sessions ON users.id=sessions.user_id WHERE token=? AND expires>?', (hashlib.sha256(self.token().encode()).hexdigest(), time.time())).fetchone()
 
     def do_GET(self):
+        if self.path == '/health':
+            with connect() as con:
+                con.execute('SELECT 1 FROM users LIMIT 1')
+            return self.send_json({'status': 'ok'})
         if not self.path.startswith('/api/'):
             return super().do_GET()
         with connect() as con:
@@ -107,13 +142,16 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         origin = self.headers.get('Origin')
-        if origin and origin != 'http://' + self.headers.get('Host', ''):
+        expected_origin = APP_ORIGIN or self.scheme + '://' + self.headers.get('Host', '')
+        if origin and origin != expected_origin:
             return self.send_json({'error': 'Invalid origin'}, 403)
         try:
             length = int(self.headers.get('Content-Length', 0))
             if not 0 < length <= 20000:
                 raise ValueError('Invalid request size.')
             data = json.loads(self.rfile.read(length))
+            if not isinstance(data, dict):
+                raise ValueError('Expected a JSON object.')
             with connect() as con:
                 if self.path in ('/api/register', '/api/login'):
                     email = str(data.get('email', '')).strip().lower()
@@ -179,5 +217,5 @@ class Handler(SimpleHTTPRequestHandler):
 
 if __name__ == '__main__':
     init()
-    print(f'Recall is running at http://localhost:{PORT}', flush=True)
-    ThreadingHTTPServer(('127.0.0.1', PORT), Handler).serve_forever()
+    print(f'Recall is listening on {HOST}:{PORT}', flush=True)
+    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
