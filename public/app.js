@@ -19,7 +19,7 @@ const assessed=data.questions.filter(q=>data.attempts.some(a=>a.question_id===q.
 const weak=topics().filter(t=>topicStats(t).count).sort((a,b)=>topicStats(a).score-topicStats(b).score);
 shell(`<div class="heading"><span class="eyebrow">A FRESH CHANCE TO LEARN</span><h1>Your next breakthrough<br>starts with recall<span class="teal">.</span></h1><p>Welcome${data.attempts.length?' back':''}, ${esc(user.name.split(' ')[0])}. Let’s turn what you remember into a clearer revision plan.</p></div><section class="hero"><div><span class="eyebrow">SMALL SESSIONS. CLEARER THINKING.</span><h2>Find your gaps.<br>Build your confidence.</h2><p>A few questions today. A better idea of<br>what to focus on tomorrow.</p><button class="primary light" data-topic="${esc(weak[0]||'Memory')}">Start a retrieval session <span>↗</span></button><small>3 questions · Go at your own pace</small></div><div class="orbit" aria-hidden="true"><div class="orbit-ring ring1"></div><div class="orbit-ring ring2"></div><div class="orbit-ring ring3"></div><div class="orbit-center">✦</div><span class="orbit-tag tag1">Retrieve</span><span class="orbit-tag tag2">Reflect</span><span class="orbit-tag tag3">Remember</span></div></section><div class="stats"><article><span>Questions explored</span><strong>${assessed}<small> / ${data.questions.length}</small></strong><p>Every answer is a starting point</p></article><article><span>Retrieval attempts</span><strong>${data.attempts.length}</strong><p>Your practice, recorded over time</p></article><article><span>Your next focus</span><strong class="focus-text">${weak[0]||'Start exploring'}</strong><p>${weak.length?'Based on your latest answer points':'Take a session to find your gaps'}</p></article></div><div class="section-title"><h2>Explore your topics</h2><span>Board-independent foundations</span></div>${cards()}`);}
 function start(topic){queue=data.questions.filter(q=>q.topic===topic);position=0;page='practice';question();}
-function question(){result=null;const q=queue[position];shell(`<div class="session-top"><button class="text-button" id="exit">← Back to topics</button><span>${q.topic} <b> ${position+1} / ${queue.length}</b></span></div><div class="session-progress"><i style="width:${position/queue.length*100}%"></i></div><section class="question-panel"><span class="eyebrow">RETRIEVE · ${q.subtopic.toUpperCase()}</span><h1>${q.prompt}</h1><p>Close your notes and explain it in your own words.</p><form id="answer-form"><label for="answer">Your answer</label><textarea id="answer" maxlength="5000" placeholder="Start with what you remember…" rows="7"></textarea><fieldset><legend>How confident do you feel?</legend><div class="confidence">${['Not sure yet','Somewhat sure','Confident'].map((v,i)=>`<label><input type="radio" name="confidence" value="${i+1}" ${i===1?'checked':''}><span>${v}</span></label>`).join('')}</div></fieldset><div class="form-actions"><button class="text-button" type="button" id="skip">I don’t know yet</button><button class="primary" type="submit">Check my answer →</button></div></form></section>`);$('#exit').onclick=()=>{page='practice';render();};$('#skip').onclick=()=>submitAnswer('');$('#answer-form').onsubmit=e=>{e.preventDefault();if(!$('#answer').value.trim())return toast('Write an answer, or choose “I don’t know yet”.');submitAnswer($('#answer').value);};}
+function question(){result=null;const q=queue[position];shell(`<div class="session-top"><button class="text-button" id="exit">← Back to topics</button><span>${q.topic} <b> ${position+1} / ${queue.length}</b></span></div><div class="session-progress"><i style="width:${position/queue.length*100}%"></i></div><section class="question-panel"><span class="eyebrow">RETRIEVE · ${q.subtopic.toUpperCase()}</span><h1>${q.prompt}</h1><p>Close your notes and explain it in your own words.</p>${sourceCard(q)}<form id="answer-form"><p class="muted">Your teacher may use an external AI tool to review this response. Keep personal details out of your answer.</p><label for="answer">Your answer</label><textarea id="answer" maxlength="5000" placeholder="Start with what you remember…" rows="7"></textarea><fieldset><legend>How confident do you feel?</legend><div class="confidence">${['Not sure yet','Somewhat sure','Confident'].map((v,i)=>`<label><input type="radio" name="confidence" value="${i+1}" ${i===1?'checked':''}><span>${v}</span></label>`).join('')}</div></fieldset><div class="form-actions"><button class="text-button" type="button" id="skip">I don’t know yet</button><button class="primary" type="submit">Check my answer →</button></div></form></section>`);$('#exit').onclick=()=>{page='practice';render();};$('#skip').onclick=()=>submitAnswer('');$('#answer-form').onsubmit=e=>{e.preventDefault();if(!$('#answer').value.trim())return toast('Write an answer, or choose “I don’t know yet”.');submitAnswer($('#answer').value);};}
 async function submitAnswer(answer){const confidence=Number(document.querySelector('input[name=confidence]:checked').value);document.querySelectorAll('.form-actions button').forEach(b=>b.disabled=true);try{result=await api('answer',{question_id:queue[position].id,answer,confidence});await refresh();feedback(answer);}catch(e){toast(e.message);document.querySelectorAll('.form-actions button').forEach(b=>b.disabled=false);}}
 function feedback(answer) {
     const r = result;
@@ -115,13 +115,26 @@ function renderStudents(query) {
 }
 
 function markLabel(attempt) {
+    if (attempt.ai_approved) return 'AI-assisted · teacher approved';
     if (attempt.teacher_id) return 'Teacher reviewed';
     if (attempt.marking_version === 'rubric-v2') return 'Rubric check · provisional';
     return attempt.reviewed ? 'Legacy self-review' : 'Legacy keyword check';
 }
 
 function teacherFeedback(attempt) {
-    return attempt.teacher_note ? `<div class="info"><b>Teacher feedback</b><p>${esc(attempt.teacher_note)}</p></div>` : '';
+    let feedback = attempt.teacher_note ? `<div class="info"><b>Teacher feedback</b><p>${esc(attempt.teacher_note)}</p></div>` : '';
+    if (attempt.ai_approved && attempt.ai_assessment) {
+        const assessment = JSON.parse(attempt.ai_assessment);
+        const marks = JSON.parse(attempt.matched);
+        feedback += `<div class="info"><b>AI-assisted hints · teacher approved</b>${assessment.points.filter((point, i) => !marks[i]).map(point => `<p>${esc(point.hint)}</p>`).join('') || '<p>All answer points were confirmed. Revisit later to check retention.</p>'}</div>`;
+    }
+    return feedback;
+}
+
+function sourceCard(question) {
+    if (!question.source) return '';
+    const source = question.source;
+    return `<details class="source-card"><summary>Curriculum source · original practice material</summary><p>${esc(source.alignment)}</p>${source.excerpt ? `<blockquote>${esc(source.excerpt)}</blockquote>` : ''}<p><a href="${esc(source.url)}" target="_blank" rel="noopener noreferrer">${esc(source.title)}</a></p><small>The specification is the source. This question and its rubric are original practice material, without exam-board endorsement.</small></details>`;
 }
 
 function showLearningPlan() {
@@ -153,36 +166,81 @@ function renderReviewQueue() {
     const pending = adminData.attempts.filter(a => a.needs_review);
     const container = $('#teacher-review');
     container.innerHTML = `<div class="section-title"><h2>Teacher review queue</h2><span>${pending.length} awaiting review</span></div>
-        <p class="muted">Conservative automated checks may miss paraphrases or accept an incorrect relationship. Confirm each original practice-rubric point. Legacy results retain their original marks until you review them.</p>
+        <p class="muted">Use ChatGPT or another AI tool to assess meaning, then review its suggestions here. Prompt transfer is manual. Importing saves a suggestion; final marks change only when you approve the review.</p>
         ${pending.length ? pending.map(attempt => {
             const student = adminData.students.find(s => s.id === attempt.user_id);
             const question = data.questions.find(q => q.id === attempt.question_id);
             const rubric = adminData.rubrics[attempt.question_id];
             const matched = JSON.parse(attempt.matched);
-            return `<details class="student-card"><summary><div><h3>${esc(student.name)} · ${question.subtopic}</h3><small>${markLabel(attempt)} · ${new Date(attempt.created * 1000).toLocaleString()}</small></div><span class="badge amber">Review required</span></summary>
-                <form class="teacher-form student-detail" data-attempt="${attempt.id}" data-revision="${attempt.revision}"><h3>${question.prompt}</h3><blockquote>${esc(attempt.answer || 'No answer submitted.')}</blockquote>
+            const ai = attempt.ai_assessment ? JSON.parse(attempt.ai_assessment) : null;
+            return `<details class="student-card" data-review="${attempt.id}" ${ai ? 'open' : ''}><summary><div><h3>${esc(student.name)} · ${question.subtopic}</h3><small>${markLabel(attempt)} · ${new Date(attempt.created * 1000).toLocaleString()}</small></div><span class="badge amber">${ai ? 'AI suggestion awaiting approval' : 'Review required'}</span></summary>
+                <form class="teacher-form student-detail" data-attempt="${attempt.id}" data-revision="${attempt.revision}"><h3>${question.prompt}</h3><blockquote>${esc(attempt.answer || 'No answer submitted.')}</blockquote>${sourceCard(question)}
+                <section class="ai-workflow"><span class="eyebrow">TEACHER-ASSISTED AI WORKFLOW</span><h3>1. Prepare the AI prompt</h3>
+                <p class="muted">Account names and emails are omitted. Check the answer itself for personal details before sharing it with an external AI tool. Confidence and initial scores are omitted so they do not bias assessment.</p>
+                <button class="secondary prepare-prompt" type="button">Prepare AI prompt</button><div class="prompt-container" hidden><label for="prompt-${attempt.id}">Prompt to review and copy</label><textarea id="prompt-${attempt.id}" name="prompt" rows="8" readonly></textarea><button class="secondary copy-prompt" type="button">Copy AI assessment prompt</button><p class="muted">Paste into your AI tool, then copy its complete JSON response below.</p></div>
+                <h3>2. Import the AI suggestion</h3><label for="provider-${attempt.id}">AI tool / model used</label><input id="provider-${attempt.id}" name="provider" maxlength="100" value="${esc(attempt.ai_provider || 'ChatGPT (manual)')}"><label for="ai-response-${attempt.id}">AI JSON response</label><textarea id="ai-response-${attempt.id}" name="ai-response" maxlength="14000" rows="5" placeholder="Paste the complete response, including assessment_ref and points."></textarea><button class="secondary import-ai" type="button">Import assessment for review</button>
+                ${ai ? `<div class="ai-suggestions"><h3>Imported suggestion</h3><small>Tool recorded by teacher · ${esc(attempt.ai_provider)} · ${new Date(attempt.ai_imported_at * 1000).toLocaleString()}</small><p>${esc(ai.summary)}</p>${ai.points.map(point => `<div class="rubric-point"><b>Point ${point.id} · ${point.met ? 'Suggested hit' : 'Suggested gap'}</b><span class="badge ${point.confidence === 'low' ? 'amber' : ''}">AI confidence · ${esc(point.confidence)}</span><p>${esc(point.reason)}</p>${point.evidence ? `<blockquote>${esc(point.evidence)}</blockquote>` : ''}<p>Hint · ${esc(point.hint)}</p></div>`).join('')}<button class="secondary apply-ai" type="button">Use suggested marks as a starting point</button></div>` : ''}</section>
+                <h3>3. Decide the final marks</h3>
                 ${rubric.points.map((point, i) => `<label class="point"><input type="checkbox" name="point" ${matched[i] ? 'checked' : ''}><span>${esc(point)}</span></label>`).join('')}
-                <label for="note-${attempt.id}">Teacher feedback and reason for this mark</label><textarea id="note-${attempt.id}" name="note" required maxlength="2000" rows="3" placeholder="Explain what was demonstrated and what to revisit."></textarea>
+                <label for="note-${attempt.id}">Teacher feedback and reason for this mark</label><textarea id="note-${attempt.id}" name="note" required maxlength="2000" rows="3" placeholder="Explain what was demonstrated and what to revisit.">${esc(attempt.teacher_note || '')}</textarea>
+                ${ai ? '<label class="point"><input type="checkbox" name="ai-confirmed" required><span>I reviewed the AI evidence, suggested marks and hints. My final marks and feedback reflect my judgement.</span></label>' : ''}
                 <button class="primary" type="submit">Save teacher mark</button><p class="error" role="alert"></p></form></details>`;
         }).join('') : '<div class="info">All submitted answers have been reviewed.</div>'}`;
-    container.querySelectorAll('form').forEach(form => {
-        form.onsubmit = async event => {
-            event.preventDefault();
-            const button = form.querySelector('button');
-            button.disabled = true;
-            try {
-                await api('teacher-review', {
-                    id: Number(form.dataset.attempt), revision: Number(form.dataset.revision),
-                    matched: [...form.querySelectorAll('[name=point]')].map(input => input.checked),
-                    note: form.querySelector('[name=note]').value
-                });
-                await refresh();
-                adminDashboard();
-                toast('Teacher mark saved. Scores and priorities updated.');
-            } catch (error) {
-                form.querySelector('.error').textContent = error.message;
-                button.disabled = false;
-            }
-        };
+    container.querySelectorAll('form').forEach(bindAIReview);
+}
+
+function bindAIReview(form) {
+    const id = Number(form.dataset.attempt);
+    const revision = Number(form.dataset.revision);
+    const errorBox = form.querySelector('.error');
+    const run = async (button, action) => {
+        button.disabled = true;
+        errorBox.textContent = '';
+        try { await action(); }
+        catch (error) { errorBox.textContent = error.message; }
+        finally { button.disabled = false; }
+    };
+    const prepare = form.querySelector('.prepare-prompt');
+    prepare.onclick = () => run(prepare, async () => {
+        const response = await api('ai-prompt', {id, revision});
+        form.querySelector('[name=prompt]').value = response.prompt;
+        form.querySelector('.prompt-container').hidden = false;
     });
+    const copy = form.querySelector('.copy-prompt');
+    copy.onclick = () => run(copy, async () => {
+        const prompt = form.querySelector('[name=prompt]');
+        try {
+            await navigator.clipboard.writeText(prompt.value);
+            toast('Prompt copied. Paste it into your AI tool.');
+        } catch {
+            prompt.focus(); prompt.select();
+            toast('Prompt selected. Press Ctrl+C to copy.');
+        }
+    });
+    const importButton = form.querySelector('.import-ai');
+    importButton.onclick = () => run(importButton, async () => {
+        await api('ai-import', {id, revision, provider: form.querySelector('[name=provider]').value,
+            response: form.querySelector('[name=ai-response]').value});
+        await refresh(); adminDashboard();
+        toast('Suggestion imported. Review it before saving final marks.');
+    });
+    const apply = form.querySelector('.apply-ai');
+    if (apply) apply.onclick = () => {
+        const attempt = adminData.attempts.find(a => a.id === id);
+        const ai = JSON.parse(attempt.ai_assessment);
+        form.querySelectorAll('[name=point]').forEach((checkbox, i) => checkbox.checked = ai.points[i].met);
+        toast('Suggested marks applied. Add your own feedback and confirm your review.');
+    };
+    form.onsubmit = event => {
+        event.preventDefault();
+        const button = form.querySelector('button[type=submit]');
+        run(button, async () => {
+            await api('teacher-review', {id, revision,
+                matched: [...form.querySelectorAll('[name=point]')].map(input => input.checked),
+                note: form.querySelector('[name=note]').value,
+                ai_confirmed: form.querySelector('[name=ai-confirmed]')?.checked || false});
+            await refresh(); adminDashboard();
+            toast('Teacher mark saved. Scores and priorities updated.');
+        });
+    };
 }

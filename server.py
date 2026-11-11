@@ -7,6 +7,7 @@ import secrets
 import sqlite3
 import time
 import learning
+import ai_workflow
 from http.cookies import SimpleCookie
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -68,6 +69,7 @@ def init():
         ''')
         con.execute('BEGIN IMMEDIATE')
         learning.migrate(con)
+        ai_workflow.migrate(con)
         columns = {row['name'] for row in con.execute('PRAGMA table_info(users)')}
         if 'role' not in columns:
             con.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'student'")
@@ -140,8 +142,12 @@ class Handler(SimpleHTTPRequestHandler):
                     student['learning'] = learning.learning_summary([a for a in attempts if a['user_id'] == student['id']], QUESTIONS)
                 return self.send_json({'students': students, 'attempts': attempts, 'rubrics': [{'points': [p[0] for p in q[3]], 'hints': learning.HINTS[i]} for i, q in enumerate(QUESTIONS)]})
             if self.path == '/api/data':
-                questions = [{'id': i, 'topic': q[0], 'subtopic': q[1], 'prompt': q[2]} for i, q in enumerate(QUESTIONS)]
+                questions = [{'id': i, 'topic': q[0], 'subtopic': q[1], 'prompt': q[2], 'source': ai_workflow.SOURCES.get(i)} for i, q in enumerate(QUESTIONS)]
                 attempts = [dict(row) for row in con.execute('SELECT * FROM attempts WHERE user_id=? ORDER BY created DESC,id DESC', (user['id'],))]
+                for attempt in attempts:
+                    attempt.pop('ai_ref', None)
+                    if not attempt['ai_approved']:
+                        attempt['ai_assessment'] = ''
                 return self.send_json({'questions': questions, 'attempts': attempts, 'learning': learning.learning_summary(attempts, QUESTIONS)})
             return self.send_json({'error': 'Not found'}, 404)
 
@@ -206,6 +212,31 @@ class Handler(SimpleHTTPRequestHandler):
                                          (user['id'], qid, answer, confidence, assessment['score'], json.dumps(assessment['matched']), time.time(), assessment['marking_version'], assessment['needs_review'], json.dumps(assessment['evidence'])))
                     con.commit()
                     return self.send_json({'id': cursor.lastrowid, **assessment})
+                if self.path in ('/api/ai-prompt', '/api/ai-import'):
+                    if user['role'] != 'admin':
+                        return self.send_json({'error': 'Administrator access required.'}, 403)
+                    con.execute('BEGIN IMMEDIATE')
+                    row = con.execute('SELECT * FROM attempts WHERE id=?', (data.get('id'),)).fetchone()
+                    if not row:
+                        return self.send_json({'error': 'Answer not found.'}, 404)
+                    if type(data.get('revision')) is not int or data['revision'] != row['revision']:
+                        return self.send_json({'error': 'This review changed. Refresh before continuing.'}, 409)
+                    if self.path == '/api/ai-prompt':
+                        prompt = ai_workflow.prompt(con, row, QUESTIONS)
+                        con.commit()
+                        return self.send_json({'prompt': prompt})
+                    provider = str(data.get('provider', '')).strip()
+                    if not 1 <= len(provider) <= 100:
+                        raise ValueError('Enter the AI tool/model used (maximum 100 characters).')
+                    assessment = ai_workflow.validate(data.get('response'), row, QUESTIONS)
+                    imported_at = time.time()
+                    serialized = json.dumps(assessment)
+                    con.execute('INSERT INTO ai_imports(attempt_id,teacher_id,provider,assessment,created) VALUES(?,?,?,?,?)',
+                                (row['id'], user['id'], provider, serialized, imported_at))
+                    con.execute('UPDATE attempts SET ai_assessment=?,ai_provider=?,ai_imported_at=?,ai_approved=0,needs_review=1,revision=revision+1 WHERE id=?',
+                                (serialized, provider, imported_at, row['id']))
+                    con.commit()
+                    return self.send_json({'ok': True})
                 if self.path == '/api/teacher-review':
                     if user['role'] != 'admin':
                         return self.send_json({'error': 'Administrator access required.'}, 403)
@@ -219,11 +250,13 @@ class Handler(SimpleHTTPRequestHandler):
                     note = str(data.get('note', '')).strip()
                     if not isinstance(matched, list) or len(matched) != len(QUESTIONS[row['question_id']][3]) or any(type(v) is not bool for v in matched) or not 1 <= len(note) <= 2000:
                         raise ValueError('Check each answer point and add a feedback note (1-2000 characters).')
+                    if row['ai_assessment'] and data.get('ai_confirmed') is not True:
+                        raise ValueError('Confirm that you reviewed the AI suggestions and edited the final marks and feedback.')
                     marked_at = time.time()
                     con.execute('INSERT INTO marking_audit(attempt_id,teacher_id,old_matched,new_matched,note,created) VALUES(?,?,?,?,?,?)',
                                 (row['id'], user['id'], row['matched'], json.dumps(matched), note, marked_at))
-                    con.execute('UPDATE attempts SET score=?,matched=?,needs_review=0,teacher_id=?,teacher_note=?,marked_at=?,revision=revision+1 WHERE id=?',
-                                (sum(matched)/len(matched), json.dumps(matched), user['id'], note, marked_at, row['id']))
+                    con.execute('UPDATE attempts SET score=?,matched=?,needs_review=0,teacher_id=?,teacher_note=?,marked_at=?,ai_approved=?,revision=revision+1 WHERE id=?',
+                                (sum(matched)/len(matched), json.dumps(matched), user['id'], note, marked_at, bool(row['ai_assessment']), row['id']))
                     con.commit()
                     return self.send_json({'ok': True})
                 if self.path == '/api/review':

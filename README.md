@@ -69,3 +69,19 @@ Confidence ratings map to 25%, 60% and 90%. Differences of at least 30 percentag
 Email summaries and reminders are excluded at the user's request. All next steps are available in the website. No scheduler or email credentials are required.
 
 For PythonAnywhere, upload `learning.py` alongside the updated `server.py` and `public/` files, then reload the web app. The configured database is migrated on startup. Existing account and attempt records are retained.
+
+## Teacher-assisted AI workflow (manual transfer, no API key)
+
+1. A student submits a written answer. The immediate check remains clearly labelled as rule-based and provisional.
+2. In Admin > Teacher review queue, expand that answer and select **Prepare AI prompt**. The prompt contains the question, original rubric, an opaque assessment reference and the answer. Account identifiers, confidence and existing scores are omitted. Review the answer for personal details before sharing it.
+3. Use **Copy AI assessment prompt**, paste it into ChatGPT or another AI tool, and ask it to return the JSON as instructed. Access to the external tool is separate and subject to that provider's availability and usage limits.
+4. Enter the actual tool/model used and paste the complete JSON into **AI JSON response**. Select **Import assessment for review**. Invalid references, incorrect point counts and invented evidence quotes are rejected. An imported suggestion does not change marks.
+5. Inspect every AI reason, evidence quote, confidence and hint. Optionally use **Use suggested marks as a starting point**, then change the checkboxes as needed, write teacher feedback and confirm your review. **Save teacher mark** updates the portfolio and spaced-practice priorities.
+6. Student History displays the teacher-approved label, teacher feedback and AI-assisted hints for missed points. Low-confidence AI suggestions are labelled explicitly. All imported assessments and final teacher mark changes are recorded in separate audit tables.
+
+The system records the provider name entered by the teacher. It cannot independently prove an imported response came from that provider. Manual transfer and human validation must be explained honestly in the demonstration. Test the real external AI step with a non-identifying example before claiming the workflow has been demonstrated end to end. This integration makes no automatic external request and requires no API credentials.
+
+Memory questions 1 and 2 have a visible source disclosure referencing AQA A-level Psychology 7182, section 3.1.2. The first includes a short excerpt from the official specification. These are our original practice questions/rubrics aligned to authentic specification material, not official examination questions or an official mark scheme. The overall site remains board-independent. Source checked 11 November 2026:
+https://www.aqa.org.uk/subjects/psychology/a-level/psychology-7182/specification/subject-content/introductory-topics-in-psychology
+
+Deploy `ai_workflow.py`, `server.py`, `learning.py` and `public/` together, then reload the PythonAnywhere web app. Existing accounts and marks are retained through additive migrations. No additional packages or environment settings are needed. New tables store AI import history. Back up the configured database before deployment.
