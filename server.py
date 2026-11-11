@@ -6,6 +6,7 @@ import re
 import secrets
 import sqlite3
 import time
+import learning
 from http.cookies import SimpleCookie
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -65,6 +66,8 @@ def init():
         CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, user_id INTEGER REFERENCES users(id), expires REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS attempts(id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id), question_id INTEGER NOT NULL, answer TEXT NOT NULL, confidence INTEGER NOT NULL, score REAL NOT NULL, matched TEXT NOT NULL, reviewed INTEGER DEFAULT 0, created REAL NOT NULL);
         ''')
+        con.execute('BEGIN IMMEDIATE')
+        learning.migrate(con)
         columns = {row['name'] for row in con.execute('PRAGMA table_info(users)')}
         if 'role' not in columns:
             con.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'student'")
@@ -133,11 +136,13 @@ class Handler(SimpleHTTPRequestHandler):
                     return self.send_json({'error': 'Administrator access required.'}, 403)
                 students = [dict(row) for row in con.execute("SELECT id,name,email FROM users WHERE role='student' ORDER BY name,id")]
                 attempts = [dict(row) for row in con.execute("SELECT attempts.* FROM attempts JOIN users ON users.id=attempts.user_id WHERE users.role='student' ORDER BY created DESC,attempts.id DESC")]
-                return self.send_json({'students': students, 'attempts': attempts})
+                for student in students:
+                    student['learning'] = learning.learning_summary([a for a in attempts if a['user_id'] == student['id']], QUESTIONS)
+                return self.send_json({'students': students, 'attempts': attempts, 'rubrics': [{'points': [p[0] for p in q[3]], 'hints': learning.HINTS[i]} for i, q in enumerate(QUESTIONS)]})
             if self.path == '/api/data':
                 questions = [{'id': i, 'topic': q[0], 'subtopic': q[1], 'prompt': q[2]} for i, q in enumerate(QUESTIONS)]
                 attempts = [dict(row) for row in con.execute('SELECT * FROM attempts WHERE user_id=? ORDER BY created DESC,id DESC', (user['id'],))]
-                return self.send_json({'questions': questions, 'attempts': attempts})
+                return self.send_json({'questions': questions, 'attempts': attempts, 'learning': learning.learning_summary(attempts, QUESTIONS)})
             return self.send_json({'error': 'Not found'}, 404)
 
     def do_POST(self):
@@ -196,15 +201,38 @@ class Handler(SimpleHTTPRequestHandler):
                     if type(qid) is not int or not 0 <= qid < len(QUESTIONS) or confidence not in (1, 2, 3) or len(answer) > 5000:
                         raise ValueError('Invalid answer.')
                     q = QUESTIONS[qid]
-                    matched = [any(term in answer.lower() for term in terms) for _, terms in q[3]]
-                    score = sum(matched) / len(matched)
-                    cursor = con.execute('INSERT INTO attempts(user_id,question_id,answer,confidence,score,matched,created) VALUES(?,?,?,?,?,?,?)', (user['id'], qid, answer, confidence, score, json.dumps(matched), time.time()))
+                    assessment = learning.assess(qid, answer)
+                    cursor = con.execute('INSERT INTO attempts(user_id,question_id,answer,confidence,score,matched,created,marking_version,needs_review,evidence) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                                         (user['id'], qid, answer, confidence, assessment['score'], json.dumps(assessment['matched']), time.time(), assessment['marking_version'], assessment['needs_review'], json.dumps(assessment['evidence'])))
                     con.commit()
-                    return self.send_json({'id': cursor.lastrowid, 'points': [p[0] for p in q[3]], 'matched': matched, 'score': score})
+                    return self.send_json({'id': cursor.lastrowid, **assessment})
+                if self.path == '/api/teacher-review':
+                    if user['role'] != 'admin':
+                        return self.send_json({'error': 'Administrator access required.'}, 403)
+                    con.execute('BEGIN IMMEDIATE')
+                    row = con.execute('SELECT * FROM attempts WHERE id=?', (data.get('id'),)).fetchone()
+                    if not row:
+                        return self.send_json({'error': 'Answer not found.'}, 404)
+                    if data.get('revision') != row['revision']:
+                        return self.send_json({'error': 'This mark changed. Refresh before saving again.'}, 409)
+                    matched = data.get('matched')
+                    note = str(data.get('note', '')).strip()
+                    if not isinstance(matched, list) or len(matched) != len(QUESTIONS[row['question_id']][3]) or any(type(v) is not bool for v in matched) or not 1 <= len(note) <= 2000:
+                        raise ValueError('Check each answer point and add a feedback note (1-2000 characters).')
+                    marked_at = time.time()
+                    con.execute('INSERT INTO marking_audit(attempt_id,teacher_id,old_matched,new_matched,note,created) VALUES(?,?,?,?,?,?)',
+                                (row['id'], user['id'], row['matched'], json.dumps(matched), note, marked_at))
+                    con.execute('UPDATE attempts SET score=?,matched=?,needs_review=0,teacher_id=?,teacher_note=?,marked_at=?,revision=revision+1 WHERE id=?',
+                                (sum(matched)/len(matched), json.dumps(matched), user['id'], note, marked_at, row['id']))
+                    con.commit()
+                    return self.send_json({'ok': True})
                 if self.path == '/api/review':
+                    con.execute('BEGIN IMMEDIATE')
                     row = con.execute('SELECT * FROM attempts WHERE id=? AND user_id=?', (data.get('id'), user['id'])).fetchone()
                     if not row:
                         return self.send_json({'error': 'Answer not found.'}, 404)
+                    if row['marking_version'] != 'legacy' or row['teacher_id'] is not None:
+                        return self.send_json({'error': 'Only a teacher can change this mark.'}, 403)
                     matched = data.get('matched')
                     if not isinstance(matched, list) or len(matched) != len(QUESTIONS[row['question_id']][3]) or any(type(v) is not bool for v in matched):
                         raise ValueError('Invalid review.')

@@ -8,7 +8,7 @@ Accounts, hashed passwords, login sessions and answer history are stored in revi
 
 The starter bank includes 15 original questions across Memory, Social Influence, Attachment, Biopsychology and Research Methods. It is board-independent foundational practice, not complete syllabus coverage. A teacher should review content before classroom use.
 
-Assessment uses simple keyword matches followed by explicit student self-review. No AI service is connected. Keyword matching can miss paraphrases and misunderstand negation, so percentages are answer-point coverage, not exam grades or validated mastery. Portfolios use the most recent attempt for each question and preserve every attempt in history.
+Assessment uses versioned, conservative checks against original practice-rubric points. Each point requires linked concepts in a clause. Students receive evidence snippets and guiding questions for missed points. Automated results remain provisional and non-empty answers enter the teacher queue. No AI service is connected. These rules can miss paraphrases or misinterpret answers; teacher judgement remains necessary. Percentages show answer-point coverage rather than exam grades. Existing historical scores are preserved and labelled as legacy.
 
 ## PythonAnywhere (WSGI)
 
@@ -57,3 +57,15 @@ Run `python -m unittest discover -s tests -v` and `python -m py_compile server.p
 ## ECC project skills
 
 ECC deployment-patterns and verification-loop are installed in `.agents/skills`, the project skill location supported by Codex. They are instructions used by the coding assistant, not a server or website dependency. Source: affaan-m/ECC, commit b38be6a7f6350964d59328b52f0624e1d1d552d1 (v2.2.3). Their complete SKILL.md files are local, so use does not depend on reading the OneDrive-backed `.ecc-source` checkout. This does not enable the full ECC plugin's optional hooks or MCP servers.
+
+## V2 learning feedback
+
+The administrator can review each answer point, add a required feedback note and save a final teacher mark. Changes are recorded in `marking_audit`, including old/new point decisions, teacher identity and timestamp. A version check prevents a stale browser overwriting a newer decision. Student requests cannot change V2 marks. Old scores are preserved during automatic additive database migration; back up the database before deployment.
+
+Questions scoring below 80% are scheduled three days after their most recent attempt. The dashboard and portfolio show upcoming/due questions with a direct re-attempt button. Early practice remains available. Progress compares the first answer with the latest answer at least three days later on the same question. A dash indicates no spaced comparison yet, rather than an apparent zero gain. This descriptive comparison does not establish that the intervention caused improvement.
+
+Confidence ratings map to 25%, 60% and 90%. Differences of at least 30 percentage points are shown for reflection. Admin cards flag possible overconfidence, due re-attempts and no practice in seven days (including accounts with no answers). These thresholds are prototype design choices and the interface labels provisional marking evidence.
+
+Email summaries and reminders are excluded at the user's request. All next steps are available in the website. No scheduler or email credentials are required.
+
+For PythonAnywhere, upload `learning.py` alongside the updated `server.py` and `public/` files, then reload the web app. The configured database is migrated on startup. Existing account and attempt records are retained.
